@@ -136,6 +136,12 @@ public sealed class WinWingHidDevice : IDisposable
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (ObjectDisposedException)
+            {
+                // Expected during HID device reset — the stream was closed mid-read.
+                _logger.LogDebug("[FCU] HID read stopped (stream closed)");
+                break;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[FCU] HID read error");
@@ -322,6 +328,11 @@ public sealed class WinWingHidDevice : IDisposable
                 try
                 {
                     _stream.Write(packet);
+                }
+                catch (ObjectDisposedException)
+                {
+                    _logger.LogDebug("[FCU] HID write stopped (stream closed)");
+                    break;
                 }
                 catch (Exception ex)
                 {

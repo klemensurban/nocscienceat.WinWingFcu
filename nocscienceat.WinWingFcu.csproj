@@ -7,7 +7,7 @@
 
     <!-- NuGet package metadata -->
     <PackageId>nocscienceat.WinWingFcu</PackageId>
-    <Version>1.0.0</Version>
+  <Version>1.0.1</Version>
     <Authors>klemensurban</Authors>
     <Description>WinWing FCU/EFIS panel driver for the nocscienceat.XPlanePanel, nocscienceat.XPlaneWebConnector framework. Derived from XSchenFly by memo5@gmx.at.</Description>
     <PackageTags>xplane;fcu;efis;winwing;simulator;flight;hardware;hid</PackageTags>
@@ -39,7 +39,10 @@
   <ItemGroup>
     <PackageReference Include="HidSharp" Version="2.6.4" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
-    <PackageReference Include="nocscienceat.XPlanePanel" Version="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\nocscienceat.XPlanePanel\nocscienceat.XPlanePanel.csproj" />
   </ItemGroup>
 
 </Project>

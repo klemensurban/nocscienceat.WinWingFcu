@@ -81,12 +81,12 @@ public partial class FcuPanelHandler
         });
         await SubscribeEnqueuedAsync(GetDataRefPath("BrightnessLcd"), (float v) =>
         {
-            byte lcd = (byte)Math.Clamp((int)(v * 235 + 20), 0, 255);
-            _hidDevice?.SetLed(FcuLed.ScreenBacklight, lcd);
+            _lcdBrightness = (byte)Math.Clamp((int)(v * 235 + 20), 0, 255);
+            _hidDevice?.SetLed(FcuLed.ScreenBacklight, _lcdBrightness);
             if (_hidDevice?.DeviceMask.HasFlag(DeviceMask.EfisR) == true)
-                _hidDevice.SetLed(FcuLed.EfisRScreenBacklight, lcd);
+                _hidDevice.SetLed(FcuLed.EfisRScreenBacklight, _lcdBrightness);
             if (_hidDevice?.DeviceMask.HasFlag(DeviceMask.EfisL) == true)
-                _hidDevice.SetLed(FcuLed.EfisLScreenBacklight, lcd);
+                _hidDevice.SetLed(FcuLed.EfisLScreenBacklight, _lcdBrightness);
         });
 
         // ===== FCU status LEDs (on/off based on dataref value) =====
@@ -121,6 +121,29 @@ public partial class FcuPanelHandler
         }
 
         _logger.LogInformation("[FCU] Subscribed to all datarefs");
+
+        // ===== Teleport detection (virtual dataref) =====
+        await SubscribeEnqueuedAsync("xplanewebconnector/teleport", (int level) =>
+        {
+            _logger.LogInformation("[FCU] Teleport detected (level={Level})", level);
+            if (level >= 2 && !_teleportRecoveryActive)
+            {
+                _teleportRecoveryActive = true;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(500, ct);
+                        EnqueueWork(async () =>
+                        {
+                            try { await HandleTeleportAsync(ct); }
+                            finally { _teleportRecoveryActive = false; }
+                        });
+                    }
+                    catch (OperationCanceledException) { }
+                }, ct);
+            }
+        });
     }
 
     /// <summary>

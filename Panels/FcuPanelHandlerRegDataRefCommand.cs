@@ -16,6 +16,13 @@ public partial class FcuPanelHandler
     private Dictionary<int, (string Label, Func<bool, Task> Handler)> _buttonHandlers = [];
 
     /// <summary>
+    /// Button IDs that represent persistent switches or rotary knobs (not momentary).
+    /// These use <see cref="FireSetDataRef"/> and are safe to fire on startup
+    /// to sync the physical hardware position to X-Plane.
+    /// </summary>
+    private HashSet<int> _switchButtonIds = [];
+
+    /// <summary>
     /// Registers all dataref paths and X-Plane command paths used by the FCU panel.
     /// Logical keys are mapped to actual X-Plane paths, enabling override via config.
     /// Called by the base class before <see cref="OnConnectedAsync"/>.
@@ -263,5 +270,14 @@ public partial class FcuPanelHandler
             _buttonHandlers[92] = ("L_2 OFF", p => FireSetDataRef("L_Efis2Sel", 1, p));
             _buttonHandlers[93] = ("L_2 VOR", p => FireSetDataRef("L_Efis2Sel", 2, p));
         }
+
+        // Persistent switches/rotary knobs: all FireSetDataRef handlers.
+        // Momentary buttons (FireCommand, FireToggleDataRef) must NOT fire on startup.
+        _switchButtonIds =
+        [
+            25, 26,                                         // ALT 100/1000
+            ..Enumerable.Range(43, 61 - 43 + 1),            // EFIS-R switches/rotaries
+            ..Enumerable.Range(75, 93 - 75 + 1),            // EFIS-L switches/rotaries
+        ];
     }
 }

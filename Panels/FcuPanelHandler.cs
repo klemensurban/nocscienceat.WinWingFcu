@@ -50,7 +50,9 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
     private int _baroStdFO, _baroUnitFO, _baroStdCapt, _baroUnitCapt;
     private string _lastEfisRBaroStr = "", _lastEfisLBaroStr = "";
     private byte _ledBrightness;
+    private byte _lcdBrightness;
     private bool _expedLedState;
+    private bool _teleportRecoveryActive;
 
     public override string PanelName => "FCU";
     public override bool IsConnected => _hidDevice?.IsOpen ?? false;
@@ -128,7 +130,7 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
         if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisL) && data.Length >= 9)
             efisLButtons = (uint)(data[5] | (data[6] << 8) | (data[7] << 16) | (data[8] << 24));
 
-        // First report: capture baseline (rotary switches have non-zero resting state)
+        // First report: capture baseline and sync persistent switch positions to X-Plane
         if (!_baselineEstablished)
         {
             _lastFcuButtons = fcuButtons;
@@ -137,6 +139,12 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
             _baselineEstablished = true;
             _logger.LogInformation("[FCU] Baseline: FCU=0x{Fcu:X8} EFISL=0x{EfisL:X8} EFISR=0x{EfisR:X8}",
                 fcuButtons, efisLButtons, efisRButtons);
+
+            SyncInitialSwitchState(fcuButtons, 0, 32);
+            if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisR))
+                SyncInitialSwitchState(efisRButtons, 32, 32);
+            if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisL))
+                SyncInitialSwitchState(efisLButtons, 64, 32);
             return;
         }
 
@@ -150,6 +158,26 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
         _lastFcuButtons = fcuButtons;
         _lastEfisRButtons = efisRButtons;
         _lastEfisLButtons = efisLButtons;
+    }
+
+    /// <summary>
+    /// Fires handlers for persistent switches/rotary knobs whose bits are set in the
+    /// first HID report, syncing physical hardware positions to X-Plane on connect.
+    /// Only <see cref="_switchButtonIds"/> are fired — momentary buttons are skipped.
+    /// </summary>
+    private void SyncInitialSwitchState(uint buttons, int baseId, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if ((buttons & (1u << i)) == 0) continue;
+
+            int buttonId = baseId + i;
+            if (!_switchButtonIds.Contains(buttonId)) continue;
+            if (!_buttonHandlers.TryGetValue(buttonId, out var entry)) continue;
+
+            _logger.LogDebug("[FCU] Initial sync: {Label} (ID {Id})", entry.Label, buttonId);
+            _ = entry.Handler(true);
+        }
     }
 
     /// <summary>
@@ -183,8 +211,109 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
     }
 
     // =====================================================================
-    // Startup screen
+    // Teleport recovery
     // =====================================================================
+
+    /// <summary>
+    /// Resets the HID device and refreshes all displays after a teleport.
+    /// Runs on the panel work queue.
+    /// </summary>
+    private async Task HandleTeleportAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("[FCU] Teleport recovery — waiting for AirbusFBW alive");
+
+        // Wait for X-Plane / ToLiss plugin to be responsive after scenery reload.
+        // The handshake runs on a background task inside the provider — the panel
+        // work queue blocks here but the Callback Task remains free (no deadlock).
+        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable aliveSub = await _connector.SubscribeAsync(
+            "xplanewebconnector/AirbusFBWalive",
+            (int v) => { if (v == 1) tcs.TrySetResult(v); });
+        try
+        {
+            await _connector.SetDataRefValueAsync("xplanewebconnector/AirbusFBWalive", 1);
+            await tcs.Task.WaitAsync(cancellationToken);
+            _logger.LogInformation("[FCU] AirbusFBW alive confirmed — resetting HID device");
+        }
+        finally
+        {
+            aliveSub.Dispose();
+        }
+
+        // 1. Detach event handler and dispose the old device
+        if (_hidDevice is not null)
+        {
+            _hidDevice.ReportReceived -= OnHidReport;
+            _hidDevice.Dispose();
+            _hidDevice = null;
+        }
+
+        await Task.Delay(500, cancellationToken);
+
+        // 2. Re-open the HID device
+        _hidDevice = new WinWingHidDevice(_logger);
+        if (!_hidDevice.FindAndOpen(_config.VendorId, _config.ProductId))
+        {
+            _logger.LogWarning("[FCU] Teleport recovery failed — device not found");
+            _hidDevice.Dispose();
+            _hidDevice = null;
+            return;
+        }
+
+        // 3. Rebuild dispatch table, restart I/O, re-init LCD
+        CreateDispatchTable(_hidDevice.DeviceMask);
+        _hidDevice.ReportReceived += OnHidReport;
+        _hidDevice.StartIo(cancellationToken);
+        _hidDevice.InitLcd();
+
+        // 4. Reset button baseline so the next HID report syncs switch state
+        _baselineEstablished = false;
+
+        // 5. Restore cached brightness and force a full display refresh.
+        //    Do NOT call ShowStartupScreen() — it sets a hardcoded dim level (80)
+        //    that would override the actual brightness. The dataref subscriptions
+        //    are still alive, so _ledBrightness already holds the correct value.
+        RestoreBrightness();
+        BuildAndSendFcuLcd();
+        if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisR))
+            BuildAndSendEfisRLcd();
+        if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisL))
+            BuildAndSendEfisLLcd();
+
+        _logger.LogInformation("[FCU] Teleport recovery complete (devices: {Mask})", _hidDevice.DeviceMask);
+    }
+
+    // =====================================================================
+    // Startup screen & brightness
+    // =====================================================================
+
+    /// <summary>
+    /// Restores all backlights, screen backlights, and flag LEDs to their
+    /// cached brightness values. Used after HID reset when the dataref
+    /// subscriptions are still alive and the cached state is correct.
+    /// </summary>
+    private void RestoreBrightness()
+    {
+        if (_hidDevice == null) return;
+
+        _hidDevice.SetLed(FcuLed.Backlight, _ledBrightness);
+        _hidDevice.SetLed(FcuLed.ExpedYellow, _ledBrightness);
+        _hidDevice.SetLed(FcuLed.ScreenBacklight, _lcdBrightness);
+        _hidDevice.SetLed(FcuLed.FlagGreen, _ledBrightness);
+
+        if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisR))
+        {
+            _hidDevice.SetLed(FcuLed.EfisRBacklight, _ledBrightness);
+            _hidDevice.SetLed(FcuLed.EfisRScreenBacklight, _lcdBrightness);
+            _hidDevice.SetLed(FcuLed.EfisRFlagGreen, _ledBrightness);
+        }
+        if (_hidDevice.DeviceMask.HasFlag(DeviceMask.EfisL))
+        {
+            _hidDevice.SetLed(FcuLed.EfisLBacklight, _ledBrightness);
+            _hidDevice.SetLed(FcuLed.EfisLScreenBacklight, _lcdBrightness);
+            _hidDevice.SetLed(FcuLed.EfisLFlagGreen, _ledBrightness);
+        }
+    }
 
     /// <summary>
     /// Turns on backlights and flag LEDs to a dim level during initialization.
