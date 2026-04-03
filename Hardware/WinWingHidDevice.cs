@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 using System.Buffers;
+using System.ComponentModel;
 using System.Threading.Channels;
 using HidSharp;
 using Microsoft.Extensions.Logging;
@@ -47,6 +48,12 @@ public sealed class WinWingHidDevice : IDisposable
     /// the callback — copy the data and return quickly.
     /// </summary>
     public event Action<byte[]>? ReportReceived;
+
+    /// <summary>
+    /// Fired when the device is physically disconnected (IOException during read/write).
+    /// The panel handler should start a reconnection loop.
+    /// </summary>
+    public event Action? Disconnected;
 
     public DeviceMask DeviceMask { get; private set; }
     public bool IsOpen => _stream != null;
@@ -138,9 +145,19 @@ public sealed class WinWingHidDevice : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (ObjectDisposedException)
             {
-                // Expected during HID device reset — the stream was closed mid-read.
                 _logger.LogDebug("[FCU] HID read stopped (stream closed)");
                 break;
+            }
+            catch (IOException ex) when (ex.InnerException is Win32Exception { NativeErrorCode: 1167 })
+            {
+                _logger.LogWarning("[FCU] HID device disconnected: {Message}", ex.Message);
+                CloseStream();
+                Disconnected?.Invoke();
+                break;
+            }
+            catch (IOException)
+            {
+                // Read timeout or transient I/O error — retry silently
             }
             catch (Exception ex)
             {
@@ -334,6 +351,17 @@ public sealed class WinWingHidDevice : IDisposable
                     _logger.LogDebug("[FCU] HID write stopped (stream closed)");
                     break;
                 }
+                catch (IOException ex) when (ex.InnerException is Win32Exception { NativeErrorCode: 1167 })
+                {
+                    _logger.LogWarning("[FCU] HID write: device disconnected");
+                    CloseStream();
+                    Disconnected?.Invoke();
+                    break;
+                }
+                catch (IOException)
+                {
+                    // Transient write error — skip this packet
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "[FCU] HID write error");
@@ -348,9 +376,15 @@ public sealed class WinWingHidDevice : IDisposable
         _hidWriteChannel.Writer.TryComplete();
         try { _writeTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         try { _readTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
-        _stream?.Close();
-        _stream?.Dispose();
-        _stream = null;
+        CloseStream();
+    }
+
+    /// <summary>Closes the HID stream without disposing the device object.</summary>
+    private void CloseStream()
+    {
+        var s = Interlocked.Exchange(ref _stream, null);
+        try { s?.Close(); } catch { }
+        try { s?.Dispose(); } catch { }
     }
 }
 

@@ -160,8 +160,9 @@ C# port and modifications by **Klemens Urban**
 
 This project depends on the
 [nocscienceat.XPlanePanel](https://github.com/klemensurban/nocscienceat.XPlanePanel)
-framework, which is licensed separately under the **MIT License** by
-Klemens Urban.
+framework and the
+[nocscienceat.XPlaneWebConnector](https://github.com/klemensurban/nocscienceat.XPlaneWebConnector),
+which are licensed separately under the **MIT License** by Klemens Urban.
 
 ## Repository
 

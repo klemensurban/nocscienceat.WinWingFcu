@@ -53,6 +53,7 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
     private byte _lcdBrightness;
     private bool _expedLedState;
     private bool _teleportRecoveryActive;
+    private readonly Dictionary<FcuLed, bool> _ledStateCache = [];
 
     public override string PanelName => "FCU";
     public override bool IsConnected => _hidDevice?.IsOpen ?? false;
@@ -85,6 +86,7 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
 
         // 3. Wire up HID report events and start the I/O pump
         _hidDevice.ReportReceived += OnHidReport;
+        _hidDevice.Disconnected += OnHidDisconnected;
         _hidDevice.StartIo(cancellationToken);
         _hidDevice.InitLcd();
 
@@ -100,11 +102,77 @@ public partial class FcuPanelHandler : PanelHandlerBase<WinWingFcuConfig>
     protected override Task OnDisconnectingAsync()
     {
         if (_hidDevice is not null)
+        {
             _hidDevice.ReportReceived -= OnHidReport;
+            _hidDevice.Disconnected -= OnHidDisconnected;
+        }
 
         _hidDevice?.Dispose();
         _hidDevice = null;
         return Task.CompletedTask;
+    }
+
+    // =====================================================================
+    // USB disconnect / reconnect handling
+    // =====================================================================
+
+    private void OnHidDisconnected()
+    {
+        _logger.LogWarning("[FCU] USB device disconnected — starting reconnection polling");
+        _baselineEstablished = false;
+
+        var oldDevice = _hidDevice;
+        _hidDevice = null;
+        oldDevice?.Dispose();
+
+        _ = Task.Run(async () =>
+        {
+            const int pollIntervalMs = 3000;
+            const int maxRetries = 60;
+
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                await Task.Delay(pollIntervalMs);
+                try
+                {
+                    var newDevice = new WinWingHidDevice(_logger);
+                    if (!newDevice.FindAndOpen(_config.VendorId, _config.ProductId))
+                    {
+                        newDevice.Dispose();
+                        continue;
+                    }
+
+                    _logger.LogInformation("[FCU] USB device found (attempt {Attempt}) — re-initializing", attempt);
+
+                    newDevice.ReportReceived += OnHidReport;
+                    newDevice.Disconnected += OnHidDisconnected;
+                    newDevice.StartIo(default);
+                    newDevice.InitLcd();
+
+                    _hidDevice = newDevice;
+                    _baselineEstablished = false;
+
+                    // Restore brightness, LED states, and LCD from cached state
+                    EnqueueWork(() =>
+                    {
+                        RestoreBrightness();
+                        RestoreLedStates();
+                        BuildAndSendFcuLcd();
+                        BuildAndSendEfisRLcd();
+                        BuildAndSendEfisLLcd();
+                    });
+
+                    _logger.LogInformation("[FCU] USB device re-initialized, displays and buttons active");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("[FCU] Reconnect attempt {Attempt} failed: {Message}", attempt, ex.Message);
+                }
+            }
+
+            _logger.LogError("[FCU] Failed to reconnect after {Max} attempts — restart the application", maxRetries);
+        });
     }
 
     // =====================================================================

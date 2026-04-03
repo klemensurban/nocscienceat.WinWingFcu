@@ -14,6 +14,8 @@ public partial class FcuPanelHandler
     /// </summary>
     private void BuildAndSendFcuLcd()
     {
+        if (_hidDevice == null) return;
+
         float speed = _airspeedKtsMach;
         float heading = _headingMag;
         float alt = _altitude;
@@ -91,7 +93,7 @@ public partial class FcuPanelHandler
         if (expedDesired != _expedLedState)
         {
             _expedLedState = expedDesired;
-            _hidDevice!.SetLed(FcuLed.ExpedGreen, (byte)(_ledBrightness * (expedDesired ? 1 : 0)));
+            _hidDevice.SetLed(FcuLed.ExpedGreen, (byte)(_ledBrightness * (expedDesired ? 1 : 0)));
         }
 
         // Build flag bytes
@@ -103,17 +105,19 @@ public partial class FcuPanelHandler
         var a = SevenSegmentEncoder.EncodeSwapped(5, altStr);
         var v = SevenSegmentEncoder.EncodeSwapped(4, vsStr);
 
-        _hidDevice!.SetFcuLcd(s, h, a, v, flagBytes);
+        _hidDevice.SetFcuLcd(s, h, a, v, flagBytes);
     }
 
     private void BuildAndSendEfisRLcd()
     {
-        UpdateEfisLcd(_baroStdFO != 0, _baroUnitFO, _baroCopilot, "efisr_qnh", "efisr_hpa_dec", _hidDevice!.SetEfisRLcd);
+        if (_hidDevice == null) return;
+        UpdateEfisLcd(_baroStdFO != 0, _baroUnitFO, _baroCopilot, "efisr_qnh", "efisr_hpa_dec", _hidDevice.SetEfisRLcd);
     }
 
     private void BuildAndSendEfisLLcd()
     {
-        UpdateEfisLcd(_baroStdCapt != 0, _baroUnitCapt, _baroPilot, "efisl_qnh", "efisl_hpa_dec", _hidDevice!.SetEfisLLcd);
+        if (_hidDevice == null) return;
+        UpdateEfisLcd(_baroStdCapt != 0, _baroUnitCapt, _baroPilot, "efisl_qnh", "efisl_hpa_dec", _hidDevice.SetEfisLLcd);
     }
 
     private void UpdateEfisLcd(bool std, int unit, float baroSource, string qnhFlagKey, string hpaDecFlagKey, Action<byte[], byte[]> setLcd)

@@ -154,7 +154,23 @@ public partial class FcuPanelHandler
     {
         return SubscribeEnqueuedAsync(GetDataRefPath(dataRefKey), (int v) =>
         {
-            _hidDevice?.SetLed(led, v > 0 ? _ledBrightness : (byte)0);
+            bool on = v > 0;
+            _ledStateCache[led] = on;
+            _hidDevice?.SetLed(led, on ? _ledBrightness : (byte)0);
         });
+    }
+
+    /// <summary>
+    /// Restores all cached LED on/off states to the hardware.
+    /// Used after USB reconnect when dataref subscriptions are still alive.
+    /// </summary>
+    private void RestoreLedStates()
+    {
+        if (_hidDevice == null) return;
+        foreach (var (led, on) in _ledStateCache)
+            _hidDevice.SetLed(led, on ? _ledBrightness : (byte)0);
+
+        // EXPED LED is managed separately
+        _hidDevice.SetLed(FcuLed.ExpedGreen, (byte)(_ledBrightness * (_expedLedState ? 1 : 0)));
     }
 }
